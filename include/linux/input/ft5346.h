@@ -274,6 +274,7 @@ struct ft5x06_ts_data {
 	u8 family_id;
 	struct dentry *dir;
 	u16 addr;
+	bool keypad_mode;
 	bool suspended;
 	char *ts_info;
 	u8 *tch_data;
