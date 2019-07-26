@@ -718,6 +718,7 @@ struct mxt_data {
 	u8 config_info[MXT_CONFIG_INFO_SIZE];
 	char *raw_ref_buf;
 	s16 *raw_key_delta;
+	bool keypad_mode;
 
 	/* Slowscan parameters	*/
 	int slowscan_enabled;
@@ -1589,6 +1590,10 @@ static void mxt_proc_t15_messages(struct mxt_data *data, u8 *msg)
 
 	if (!input_dev)
 		return;
+
+	if(data->keypad_mode)
+		return;
+
 	keyvalue = mxt_read_key_delta(data);
 	printk("Key:keystates:%ld, keyvalue:%d\n", keystates, keyvalue);
 
@@ -1812,6 +1817,9 @@ static void mxt_proc_t97_messages(struct mxt_data *data, u8 *msg)
 	unsigned long keystates = le32_to_cpu(msg[2]);
 
 	if (!input_dev)
+		return;
+
+	if(data->keypad_mode)
 		return;
 
 	for (key = 0; key < pdata->config_array[index].key_num; key++) {
@@ -3180,6 +3188,8 @@ static int mxt_initialize(struct mxt_data *data)
 	struct mxt_info *info = &data->info;
 	int error;
 	u8 retry_count = 0;
+
+	data->keypad_mode = false;
 
 retry_probe:
 	/* Read info block */
@@ -4914,6 +4924,33 @@ static ssize_t mxt_mem_access_write(struct file *filp, struct kobject *kobj,
 	return ret == 0 ? count : 0;
 }
 
+static ssize_t mxt_0dbutton_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct mxt_data *data = dev_get_drvdata(dev);
+	return snprintf(buf, PAGE_SIZE, "%u\n",
+			data->keypad_mode);
+}
+
+static ssize_t mxt_0dbutton_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+
+	unsigned int input;
+	struct mxt_data *data = dev_get_drvdata(dev);
+
+	if (sscanf(buf, "%u", &input) != 1)
+		return -EINVAL;
+
+	input = input > 0 ? 1 : 0;
+
+	dev_info(dev, "%s: input %d\n", __func__, input);
+
+	data->keypad_mode = input;
+
+	return count;
+}
+
 static DEVICE_ATTR(update_fw, S_IWUSR | S_IRUSR, mxt_update_fw_show, mxt_update_fw_store);
 static DEVICE_ATTR(debug_enable, S_IWUSR | S_IRUSR, mxt_debug_enable_show,
 			mxt_debug_enable_store);
@@ -4932,6 +4969,7 @@ static DEVICE_ATTR(sensitive_mode, S_IWUSR | S_IRUSR, mxt_sensitive_mode_show, m
 static DEVICE_ATTR(chip_reset, S_IWUSR, NULL, mxt_chip_reset_store);
 static DEVICE_ATTR(chg_state, S_IRUGO, mxt_chg_state_show, NULL);
 static DEVICE_ATTR(wakeup_mode, S_IWUSR | S_IRUSR, mxt_wakeup_mode_show, mxt_wakeup_mode_store);
+static DEVICE_ATTR(keypad_mode, S_IWUSR | S_IRUSR, mxt_0dbutton_show, mxt_0dbutton_store);
 static struct attribute *mxt_attrs[] = {
 	&dev_attr_update_fw.attr,
 	&dev_attr_debug_enable.attr,
@@ -4948,6 +4986,7 @@ static struct attribute *mxt_attrs[] = {
 	&dev_attr_chip_reset.attr,
 	&dev_attr_chg_state.attr,
 	&dev_attr_wakeup_mode.attr,
+	&dev_attr_keypad_mode.attr,
 	NULL
 };
 
@@ -5931,6 +5970,7 @@ static int mxt_proc_init(struct kernfs_node *sysfs_node_parent)
 	int ret = 0;
 	char *buf, *path = NULL;
 	char *double_tap_sysfs_node;
+	char *key_disabler_sysfs_node;
 	struct proc_dir_entry *proc_entry_tp = NULL;
 	struct proc_dir_entry *proc_symlink_tmp = NULL;
 	buf = kzalloc(PATH_MAX, GFP_KERNEL);
@@ -5952,8 +5992,25 @@ static int mxt_proc_init(struct kernfs_node *sysfs_node_parent)
 	       pr_err("%s: Couldn't create double_tap_enable symlink\n", __func__);
 	}
 
+	proc_entry_tp = proc_mkdir("touchpanel", NULL);
+	if (proc_entry_tp == NULL) {
+	       pr_err("%s: Couldn't create touchpanel dir in procfs\n", __func__);
+	       ret = -ENOMEM;
+	}
+
+	key_disabler_sysfs_node = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (key_disabler_sysfs_node)
+		sprintf(key_disabler_sysfs_node, "/sys%s/%s", path, "keypad_mode");
+	proc_symlink_tmp = proc_symlink("capacitive_keys_disable",
+			proc_entry_tp, key_disabler_sysfs_node);
+	if (proc_symlink_tmp == NULL) {
+	       ret = -ENOMEM;
+		pr_err("%s: Couldn't create capacitive_keys_disable symlink\n", __func__);
+	}
+
 	kfree(buf);
 	kfree(double_tap_sysfs_node);
+	kfree(key_disabler_sysfs_node);
 	return ret;
 }
 

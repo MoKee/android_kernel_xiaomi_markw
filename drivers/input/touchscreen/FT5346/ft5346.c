@@ -476,6 +476,10 @@ static irqreturn_t ft5x06_ts_interrupt(int irq, void *dev_id)
 		/* invalid combination */
 		if (!num_touches && !status && !id)
 			break;
+
+		if (y == 2000 && !data->keypad_mode)
+			break;
+
 		input_mt_slot(ip_dev, id);
 		if (status == FT_TOUCH_DOWN || status == FT_TOUCH_CONTACT) {
 			input_mt_report_slot_state(ip_dev, MT_TOOL_FINGER, 1);
@@ -1685,6 +1689,81 @@ static const struct file_operations debug_dump_info_fops = {
 
 #endif
 
+static ssize_t ft5x06_keypad_mode_show(struct device *dev,
+	struct device_attribute *attr, char *buf)
+{
+	struct ft5x06_ts_data *data = dev_get_drvdata(dev);
+	int count;
+	char c = data->keypad_mode ? '0' : '1';
+
+	count = sprintf(buf, "%c\n", c);
+
+	return count;
+}
+
+static ssize_t ft5x06_keypad_mode_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct ft5x06_ts_data *data = dev_get_drvdata(dev);
+	int i;
+
+	if (sscanf(buf, "%u", &i) == 1 && i < 2) {
+		data->keypad_mode = (i == 0);
+		return count;
+	} else {
+		dev_dbg(dev, "keypad_mode write error\n");
+		return -EINVAL;
+	}
+}
+
+static DEVICE_ATTR(keypad_mode, S_IWUSR | S_IRUSR, ft5x06_keypad_mode_show,
+		   ft5x06_keypad_mode_store);
+
+static struct attribute *ft5x06_ts_attrs[] = {
+	&dev_attr_keypad_mode.attr,
+	NULL
+};
+
+static const struct attribute_group ft5x06_ts_attr_group = {
+	.attrs = ft5x06_ts_attrs,
+};
+
+static int ft5x06_proc_init(struct ft5x06_ts_data *data)
+{
+	struct i2c_client *client = data->client;
+
+	int ret = 0;
+	char *buf, *path = NULL;
+	char *key_disabler_sysfs_node;
+	struct proc_dir_entry *proc_entry_tp = NULL;
+	struct proc_dir_entry *proc_symlink_tmp  = NULL;
+
+	buf = kzalloc(sizeof(struct ft5x06_ts_data), GFP_KERNEL);
+	if (buf)
+		path = "/devices/soc/78b7000.i2c/i2c-3/3-0038";
+
+	proc_entry_tp = proc_mkdir("touchpanel", NULL);
+	if (proc_entry_tp == NULL) {
+		dev_err(&client->dev, "Couldn't create touchpanel dir in procfs\n");
+		ret = -ENOMEM;
+	}
+
+	key_disabler_sysfs_node = kzalloc(sizeof(struct ft5x06_ts_data), GFP_KERNEL);
+	if (key_disabler_sysfs_node)
+		sprintf(key_disabler_sysfs_node, "/sys%s/%s", path, "keypad_mode");
+	proc_symlink_tmp = proc_symlink("capacitive_keys_disable",
+			proc_entry_tp, key_disabler_sysfs_node);
+	if (proc_symlink_tmp == NULL) {
+		dev_err(&client->dev, "Couldn't create capacitive_keys_disable symlink\n");
+		ret = -ENOMEM;
+	}
+
+	kfree(buf);
+	kfree(key_disabler_sysfs_node);
+
+	return ret;
+}
+
 static int ft5x0x_GetFirmwareSize(char *firmware_name)
 {
 	struct file *pfile = NULL;
@@ -2656,6 +2735,8 @@ static int ft5x06_ts_probe(struct i2c_client *client,
 		return -ENOMEM;
 	}
 
+	data->keypad_mode = true;
+
 	if (pdata->fw_name) {
 		len = strlen(pdata->fw_name);
 		if (len > FT_FW_NAME_MAX_LEN - 1) {
@@ -2861,6 +2942,14 @@ static int ft5x06_ts_probe(struct i2c_client *client,
 	}
 #endif
 
+	 err = sysfs_create_group(&client->dev.kobj, &ft5x06_ts_attr_group);
+	 if (err) {
+		dev_err(&client->dev, "Failure %d creating sysfs group\n",err);
+		goto free_reset_gpio;
+    }
+
+    ft5x06_proc_init(data);
+
 	data->ts_info = devm_kzalloc(&client->dev,
 			FT_INFO_MAX_LEN, GFP_KERNEL);
 	if (!data->ts_info) {
@@ -3016,6 +3105,7 @@ static int ft5x06_ts_remove(struct i2c_client *client)
 		    CTP_ERROR("Cannot get idle pinctrl state\n");
 	}
 	input_unregister_device(data->input_dev);
+	sysfs_remove_group(&client->dev.kobj, &ft5x06_ts_attr_group);
 
 	return 0;
 }
